@@ -122,6 +122,7 @@ struct SampleInfo {
     /// We use this to determine whether we are reading signal ot Sequence from the file info (R10 -> Sequence)
     pore_type: PoreType,
     nucleotide_type: NucleotideType,
+    r10_emit_prefix: bool,
 }
 impl fmt::Debug for SampleInfo {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -157,6 +158,7 @@ impl SampleInfo {
         read_len_dist: ReadLengthDist,
         pore_type: PoreType,
         nucleotide_type: NucleotideType,
+        r10_emit_prefix: bool,
     ) -> SampleInfo {
         SampleInfo {
             name,
@@ -170,6 +172,7 @@ impl SampleInfo {
             file_weights: vec![],
             pore_type,
             nucleotide_type,
+            r10_emit_prefix,
         }
     }
 }
@@ -331,6 +334,37 @@ enum OutputFileType {
     Fast5(MultiFast5File),
 }
 
+#[derive(Clone, Copy)]
+struct OutputCalibration {
+    digitisation: f64,
+    offset: f64,
+    range: f64,
+    flow_cell_product_code: &'static str,
+    exp_script_name: &'static str,
+    sequencing_kit: &'static str,
+}
+
+fn get_output_calibration(config: &Config) -> OutputCalibration {
+    match (config.check_pore_type(), config.get_r10_output_calibration().as_str()) {
+        (PoreType::R10, "legacy") => OutputCalibration {
+            digitisation: 8192.0,
+            offset: 6.0,
+            range: 1500.0,
+            flow_cell_product_code: "FLO-MIN106",
+            exp_script_name: "sequencing/sequencing_MIN106_DNA,FLO-MIN106,SQK-LSK109",
+            sequencing_kit: "sqk-lsk109",
+        },
+        _ => OutputCalibration {
+            digitisation: 2048.0,
+            offset: -243.0,
+            range: 2048.0 * 0.1462070643901825,
+            flow_cell_product_code: "FLO-MIN114",
+            exp_script_name: "sequencing/sequencing_MIN114_DNA,FLO-MIN114,SQK-LSK114",
+            sequencing_kit: "sqk-lsk114",
+        },
+    }
+}
+
 /// Start the thread that will handle writing out the FAST5 file,
 fn start_write_out_thread(
     run_id: String,
@@ -348,6 +382,7 @@ fn start_write_out_thread(
         let config = _load_toml(&x.simulation_profile);
         let sample_rate = config.parameters.get_sample_rate().to_string();
         let ic_pt = config.check_pore_type();
+        let output_calibration = get_output_calibration(&config);
         let experiment_duration = config.get_experiment_duration_set().to_string();
         // std::env::set_var("HDF5_PLUGIN_PATH", "./vbz_plugin".resolve().as_os_str());
         let context_tags = HashMap::from([
@@ -358,7 +393,7 @@ fn start_write_out_thread(
             ("package", "bream4"),
             ("package_version", "6.3.5"),
             ("sample_frequency", &sample_rate),
-            ("sequencing_kit", "sqk-lsk114"),
+            ("sequencing_kit", output_calibration.sequencing_kit),
         ]);
         let tracking_id = HashMap::from([
             ("asic_id", "817405089"),
@@ -378,12 +413,12 @@ fn start_write_out_thread(
             ("distribution_version", "21.10.8"),
             (
                 "exp_script_name",
-                "sequencing/sequencing_MIN106_DNA,FLO-MIN106,SQK-LSK109",
+                output_calibration.exp_script_name,
             ),
             ("exp_script_purpose", "sequencing_run"),
             ("exp_start_time", iso_time.as_str()),
             ("flow_cell_id", config.parameters.flowcell_name.as_str()),
-            ("flow_cell_product_code", "FLO-MIN114"),
+            ("flow_cell_product_code", output_calibration.flow_cell_product_code),
             ("guppy_version", "5.0.17+99baa5b"),
             ("heatsink_temp", "34.066406"),
             ("host_product_code", "GRD-X5B003"),
@@ -425,13 +460,13 @@ fn start_write_out_thread(
                         .collect(),
                     experiment_name: "Experiment 1".to_string(),
                     flow_cell_id: config.parameters.flowcell_name.to_string(),
-                    flow_cell_product_code: "FLO-MIN114".to_string(),
+                    flow_cell_product_code: output_calibration.flow_cell_product_code.to_string(),
                     protocol_name: "Protocol 1".to_string(),
                     protocol_run_id: "PRID123".to_string(),
                     protocol_start_time: 1625097600000,
                     sample_id: config.parameters.sample_name.to_string(),
                     sample_rate: config.parameters.get_sample_rate() as u16,
-                    sequencing_kit: "sqk-lsk114".to_string(),
+                    sequencing_kit: output_calibration.sequencing_kit.to_string(),
                     sequencer_position: "bamboo".to_string(),
                     sequencer_position_type: "Gigachad".to_string(),
                     software: "Icarust v1.0".to_string(),
@@ -524,9 +559,9 @@ fn start_write_out_thread(
                                 ),
                             ]);
                             let channel_info = ChannelInfo::new(
-                                2048_f64,
-                                -243.0,
-                                2048.0 * 0.1462070643901825,
+                                output_calibration.digitisation,
+                                output_calibration.offset,
+                                output_calibration.range,
                                 config.parameters.get_sample_rate() as f64,
                                 to_write_info.channel_number.clone(),
                             );
@@ -561,8 +596,10 @@ fn start_write_out_thread(
                                 signal_: signal,
                                 channel: to_write_info.channel as u16,
                                 well: 1,
-                                calibration_offset: -243.0,
-                                calibration_scale: 0.14620706,
+                                calibration_offset: output_calibration.offset as f32,
+                                calibration_scale: (output_calibration.range
+                                    / output_calibration.digitisation)
+                                    as f32,
                                 read_number: to_write_info.read_number,
                                 start: 1,
                                 median_before: 100.0,
@@ -938,6 +975,7 @@ fn process_samples_from_config(
                         config.parameters.get_sequencing_speed(),
                         config.check_pore_type(),
                         config.check_dna_or_rna(),
+                        config.get_r10_emit_prefix(),
                     );
                 }
             }
@@ -998,6 +1036,7 @@ fn process_samples_from_config(
                     config.parameters.get_sequencing_speed(),
                     config.check_pore_type(),
                     config.check_dna_or_rna(),
+                    config.get_r10_emit_prefix(),
                 );
             } else if sample.input_genome.is_npy() {
                 read_views_of_squiggle_data(
@@ -1121,6 +1160,7 @@ fn read_views_of_sequence_data(
     sequencing_speed: usize,
     pore_type: PoreType,
     nucleotide_type: NucleotideType,
+    r10_emit_prefix: bool,
 ) {
     info!(
         "Reading sequence information for {:#?} for sample {:#?} MAY TAKE SOME TIME",
@@ -1130,6 +1170,7 @@ fn read_views_of_sequence_data(
     // lazy but cba to pass through
     let sim_type = match (nucleotide_type, pore_type) {
         (NucleotideType::DNA, PoreType::R10) => SimType::DNAR10,
+        (NucleotideType::DNA, PoreType::R9) => SimType::DNAR9,
         (NucleotideType::RNA, PoreType::R9) => SimType::RNAR9,
         _ => {
             panic!("We shouldn't be readig sequence for R10 RNA or R9DNA");
@@ -1169,6 +1210,7 @@ fn read_views_of_sequence_data(
                 read_length_dist,
                 pore_type,
                 nucleotide_type,
+                r10_emit_prefix,
             ));
         sample.files.push(file_info);
         done += 1;
@@ -1215,6 +1257,7 @@ fn read_views_of_squiggle_data(
             read_length_dist,
             PoreType::R9,
             NucleotideType::DNA,
+            true,
         ));
     sample.files.push(file_info)
 }
@@ -1367,18 +1410,23 @@ fn generate_read(
             read_squig
         }
         (NucleotideType::DNA, PoreType::R10) | (NucleotideType::RNA, PoreType::R9) => {
-            // generate a prefix
-            let mut prefix = simulation::generate_prefix().expect("NO PREFIX BAD");
             //  read the signal here
             let mut read_squig = file_info
                 .sequence
                 .as_ref()
                 .expect("Couldn't get my hands on that tasty tasty signal")[start..end]
                 .to_vec();
+            let mut prefix = if sample_info.r10_emit_prefix {
+                simulation::generate_prefix().expect("NO PREFIX BAD")
+            } else {
+                Vec::new()
+            };
             if sample_info.is_barcoded {
                 read_squig.extend(barcode_2_squig);
                 // add on some end padding to see if it improves basecalling
-                read_squig.extend(&prefix);
+                if sample_info.r10_emit_prefix {
+                    read_squig.extend(&prefix);
+                }
                 barcode_1_squig.extend(read_squig);
                 read_squig = barcode_1_squig;
             }

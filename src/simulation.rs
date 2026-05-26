@@ -154,9 +154,17 @@ pub fn get_sim_profile(sim_type: SimType) -> SimSettings {
             reverse: true,
             sim_type: SimType::RNAR9,
         },
-        _ => {
-            unimplemented!()
-        }
+        SimType::DNAR9 => SimSettings {
+            digitisation: 8192,
+            scale: 1350.0 / 8192.0,
+            range: 1350.0,
+            offset: 0.0,
+            samples_per_base: 10,
+            kmer_len: 5,
+            noise: false,
+            reverse: false,
+            sim_type: SimType::DNAR9,
+        },
     }
 }
 
