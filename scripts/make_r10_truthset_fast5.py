@@ -20,6 +20,8 @@ import argparse
 import csv
 import math
 import pathlib
+import shutil
+import subprocess
 import uuid
 from dataclasses import dataclass
 from typing import Iterable
@@ -65,6 +67,15 @@ CALIBRATIONS = {
         exp_script_name="sequencing/sequencing_MIN106_DNA,FLO-MIN106,SQK-LSK109",
         sequencing_kit="sqk-lsk109",
     ),
+    "squigulator": Calibration(
+        name="squigulator",
+        digitisation=8192.0,
+        offset=13.380569,
+        range=1536.598389,
+        flow_cell_product_code="FLO-MIN114",
+        exp_script_name="sequencing/sequencing_MIN114_DNA,FLO-MIN114,SQK-LSK114",
+        sequencing_kit="sqk-lsk114",
+    ),
 }
 
 
@@ -98,6 +109,25 @@ def parse_args() -> argparse.Namespace:
         type=pathlib.Path,
         default=None,
         help="Override the R10 model TSV. Defaults to Icarust R10_model.tsv.",
+    )
+    parser.add_argument(
+        "--backend",
+        choices=["legacy_r10", "dorado_r10"],
+        default="legacy_r10",
+        help=(
+            "legacy_r10 uses Icarust's bundled 9-mer table; dorado_r10 uses "
+            "Squigulator's dna-r10-min signal profile."
+        ),
+    )
+    parser.add_argument(
+        "--squigulator",
+        default="squigulator",
+        help="Squigulator executable for --backend dorado_r10.",
+    )
+    parser.add_argument(
+        "--slow5tools",
+        default="slow5tools",
+        help="slow5tools executable for extracting Squigulator BLOW5 signal.",
     )
     return parser.parse_args()
 
@@ -172,6 +202,73 @@ def signal_from_model(
         raise ValueError(scaling)
 
     return np.rint(raw).clip(np.iinfo(np.int16).min, np.iinfo(np.int16).max).astype(np.int16)
+
+
+def require_executable(name: str) -> str:
+    path = shutil.which(name)
+    if path is None:
+        raise FileNotFoundError(f"Required executable not found on PATH: {name}")
+    return path
+
+
+def signal_from_squigulator(
+    seq: str,
+    sample_rate: int,
+    sequencing_speed: int,
+    out_dir: pathlib.Path,
+    variant: str,
+    squigulator: str,
+    slow5tools: str,
+) -> tuple[np.ndarray, Calibration]:
+    tmp_dir = out_dir / "squigulator"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    fasta_path = tmp_dir / f"{variant}.fa"
+    blow5_path = tmp_dir / f"{variant}.blow5"
+    write_fasta(fasta_path, [(variant, seq)])
+
+    subprocess.run(
+        [
+            squigulator,
+            "-x",
+            "dna-r10-min",
+            "--ideal",
+            "--full-contigs",
+            "--sample-rate",
+            str(sample_rate),
+            "--bps",
+            str(sequencing_speed),
+            "--seed",
+            "42",
+            str(fasta_path),
+            "-o",
+            str(blow5_path),
+        ],
+        check=True,
+    )
+    view = subprocess.run(
+        [slow5tools, "view", str(blow5_path)],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    )
+    for line in view.stdout.splitlines():
+        if not line or line.startswith("#") or line.startswith("@"):
+            continue
+        fields = line.rstrip().split("\t")
+        if len(fields) < 8:
+            raise ValueError(f"Unexpected SLOW5 row with {len(fields)} fields")
+        calibration = Calibration(
+            name="squigulator",
+            digitisation=float(fields[2]),
+            offset=float(fields[3]),
+            range=float(fields[4]),
+            flow_cell_product_code=CALIBRATIONS["squigulator"].flow_cell_product_code,
+            exp_script_name=CALIBRATIONS["squigulator"].exp_script_name,
+            sequencing_kit=CALIBRATIONS["squigulator"].sequencing_kit,
+        )
+        signal = np.fromiter((int(x) for x in fields[7].split(",")), dtype=np.int16)
+        return signal, calibration
+    raise ValueError(f"No signal row found in {blow5_path}")
 
 
 def write_fasta(path: pathlib.Path, records: list[tuple[str, str]]) -> None:
@@ -303,7 +400,9 @@ def main() -> None:
     model_path = args.model_file or (
         args.icarust_root / "static/dna_r10.4.1_e8.2_400bps/R10_model.tsv"
     )
-    model = read_model(model_path)
+    model = read_model(model_path) if args.backend == "legacy_r10" else None
+    squigulator = require_executable(args.squigulator) if args.backend == "dorado_r10" else None
+    slow5tools = require_executable(args.slow5tools) if args.backend == "dorado_r10" else None
     samples_per_base = args.sample_rate // args.sequencing_speed
     if samples_per_base <= 0:
         raise ValueError("sample_rate / sequencing_speed must be at least one sample per base")
@@ -316,10 +415,21 @@ def main() -> None:
     for orientation in ("forward", "reverse", "complement", "revcomp"):
         emitted = orient(original, orientation)
         records.append((orientation, emitted))
-        for calibration_name, calibration in CALIBRATIONS.items():
-            for scaling in ("ont_inverse", "offset_before_scale"):
-                variant = f"{orientation}.{calibration_name}.{scaling}.{args.noise}"
-                read_id = str(uuid.uuid5(uuid.NAMESPACE_URL, variant))
+        if args.backend == "legacy_r10":
+            variants = [
+                (calibration_name, calibration, scaling)
+                for calibration_name, calibration in CALIBRATIONS.items()
+                if calibration_name != "squigulator"
+                for scaling in ("ont_inverse", "offset_before_scale")
+            ]
+        else:
+            variants = [("squigulator", CALIBRATIONS["squigulator"], "builtin")]
+
+        for calibration_name, calibration, scaling in variants:
+            variant = f"{orientation}.{calibration_name}.{scaling}.{args.noise}"
+            read_id = str(uuid.uuid5(uuid.NAMESPACE_URL, variant))
+            if args.backend == "legacy_r10":
+                assert model is not None
                 signal = signal_from_model(
                     emitted,
                     model,
@@ -328,29 +438,42 @@ def main() -> None:
                     scaling,
                     args.noise,
                 )
-                npy_path = npy_dir / f"{variant}.npy"
-                fast5_path = fast5_dir / f"{variant}.fast5"
-                np.save(npy_path, signal)
-                write_fast5(fast5_path, read_id, run_id, signal, calibration, args.sample_rate)
-                manifest_rows.append(
-                    {
-                        "variant": variant,
-                        "read_id": read_id,
-                        "fast5": str(fast5_path),
-                        "npy": str(npy_path),
-                        "orientation": orientation,
-                        "calibration": calibration_name,
-                        "scaling": scaling,
-                        "noise": args.noise,
-                        "sample_rate": args.sample_rate,
-                        "sequencing_speed": args.sequencing_speed,
-                        "samples_per_base": samples_per_base,
-                        "expected_name": orientation,
-                        "raw_min": int(signal.min()),
-                        "raw_max": int(signal.max()),
-                        "raw_mean": float(signal.mean()),
-                    }
+            else:
+                assert squigulator is not None
+                assert slow5tools is not None
+                signal, calibration = signal_from_squigulator(
+                    emitted,
+                    args.sample_rate,
+                    args.sequencing_speed,
+                    out_dir,
+                    variant,
+                    squigulator,
+                    slow5tools,
                 )
+            npy_path = npy_dir / f"{variant}.npy"
+            fast5_path = fast5_dir / f"{variant}.fast5"
+            np.save(npy_path, signal)
+            write_fast5(fast5_path, read_id, run_id, signal, calibration, args.sample_rate)
+            manifest_rows.append(
+                {
+                    "variant": variant,
+                    "read_id": read_id,
+                    "fast5": str(fast5_path),
+                    "npy": str(npy_path),
+                    "orientation": orientation,
+                    "calibration": calibration_name,
+                    "scaling": scaling,
+                    "noise": args.noise,
+                    "backend": args.backend,
+                    "sample_rate": args.sample_rate,
+                    "sequencing_speed": args.sequencing_speed,
+                    "samples_per_base": samples_per_base,
+                    "expected_name": orientation,
+                    "raw_min": int(signal.min()),
+                    "raw_max": int(signal.max()),
+                    "raw_mean": float(signal.mean()),
+                }
+            )
 
     write_fasta(out_dir / "expected_sequences.fa", records)
     with (out_dir / "manifest.tsv").open("w", newline="") as handle:
@@ -362,8 +485,8 @@ def main() -> None:
     commands.write_text(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
-        "MODEL=${MODEL:-/home/users/snarayanasamy/tools/dorado/models/dna_r10.4.1_e8.2_400bps_hac@v4.3.0}\n"
-        "DORADO=${DORADO:-dorado}\n"
+        "MODEL=${MODEL:-/home/shaman.narayanasamy/tools/adaptive_sampling_microbiome_handoff/dorado/models/dna_r10.4.1_e8.2_400bps_hac@v5.2.0}\n"
+        "DORADO=${DORADO:-/home/shaman.narayanasamy/tools/adaptive_sampling_microbiome_handoff/dorado/dorado-2.0.0-linux-x64/bin/dorado}\n"
         "POD5=${POD5:-pod5}\n"
         f"FAST5_DIR={fast5_dir}\n"
         f"POD5_FILE={out_dir / 'truthset.pod5'}\n"
