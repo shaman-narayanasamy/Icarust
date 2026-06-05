@@ -129,6 +129,12 @@ def parse_args() -> argparse.Namespace:
         default="slow5tools",
         help="slow5tools executable for extracting Squigulator BLOW5 signal.",
     )
+    parser.add_argument(
+        "--squigulator-kmer-model",
+        type=pathlib.Path,
+        default=None,
+        help="Optional custom nucleotide k-mer model passed to Squigulator.",
+    )
     return parser.parse_args()
 
 
@@ -219,6 +225,7 @@ def signal_from_squigulator(
     variant: str,
     squigulator: str,
     slow5tools: str,
+    kmer_model: pathlib.Path | None = None,
 ) -> tuple[np.ndarray, Calibration]:
     tmp_dir = out_dir / "squigulator"
     tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -226,25 +233,23 @@ def signal_from_squigulator(
     blow5_path = tmp_dir / f"{variant}.blow5"
     write_fasta(fasta_path, [(variant, seq)])
 
-    subprocess.run(
-        [
-            squigulator,
-            "-x",
-            "dna-r10-min",
-            "--ideal",
-            "--full-contigs",
-            "--sample-rate",
-            str(sample_rate),
-            "--bps",
-            str(sequencing_speed),
-            "--seed",
-            "42",
-            str(fasta_path),
-            "-o",
-            str(blow5_path),
-        ],
-        check=True,
-    )
+    cmd = [
+        squigulator,
+        "-x",
+        "dna-r10-min",
+        "--ideal",
+        "--full-contigs",
+        "--sample-rate",
+        str(sample_rate),
+        "--bps",
+        str(sequencing_speed),
+        "--seed",
+        "42",
+    ]
+    if kmer_model is not None:
+        cmd.extend(["--kmer-model", str(kmer_model)])
+    cmd.extend([str(fasta_path), "-o", str(blow5_path)])
+    subprocess.run(cmd, check=True)
     view = subprocess.run(
         [slow5tools, "view", str(blow5_path)],
         check=True,
@@ -449,6 +454,7 @@ def main() -> None:
                     variant,
                     squigulator,
                     slow5tools,
+                    args.squigulator_kmer_model,
                 )
             npy_path = npy_dir / f"{variant}.npy"
             fast5_path = fast5_dir / f"{variant}.fast5"
