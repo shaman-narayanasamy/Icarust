@@ -1576,9 +1576,10 @@ impl DataServiceServicer {
                                 }
                                 false => 1.0,
                             };
-                            value.dead = rng.gen_bool(
-                                potential_yolo_death.base_chance * prev_chance_multiplier,
-                            );
+                            let pore_death_probability = (potential_yolo_death.base_chance
+                                * prev_chance_multiplier)
+                                .clamp(0.0, 1.0);
+                            value.dead = rng.gen_bool(pore_death_probability);
                         }
                         value.read.clear();
                         // shrink the vec allocation to new empty status

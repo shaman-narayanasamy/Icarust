@@ -46,3 +46,6 @@ rayon = "1.10.0"
 
 [build-dependencies]
 tonic-build = "0.11"
+
+[patch.crates-io]
+hdf5-sys = { path = "vendor/hdf5-sys-0.8.1" }
