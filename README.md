@@ -8,6 +8,34 @@ Figure 1 - Accurate depiction of a man learning Rust ☠️
 | :zap: Icarust is a work in progress - as such some small bugs are to be expected. |
 |-----------------------------------------------------------------------------------|
 
+## Current R10/Dorado status
+
+The local `feature/r10-dorado-backend` branch has a working R10 simulation path
+for Dorado validation.
+
+Validated claim:
+
+```text
+Icarust can simulate R10 reads from FASTA community inputs.
+Dorado HAC R10.4.1 E8.2 can basecall the generated output.
+The basecalled reads map back to the same source references used for simulation.
+```
+
+Use `5000` Hz R10 profiles with current Dorado HAC R10.4.1 E8.2 model bundles.
+The current Dorado HAC models used in validation expect 5000 Hz input; 4000 Hz
+truth-set rows failed model/sample-rate compatibility checks.
+
+Relevant local docs:
+
+```text
+CHANGELOG.md
+docs/r10_dorado_backend_validation.md
+```
+
+Important boundary: this validates Icarust R10 simulation/basecalling/reference
+capture. It does not validate adaptive-sampling policy quality or downstream
+k-mer target/background decisions.
+
 ## Quick start docker ( Recommended)
 Alternatively we offer a Docker container, which can be found at https://www.github.com/looselab/icarust_docker. 
 This negates the need for any manual building, dependency management and is simple(er) to use.
