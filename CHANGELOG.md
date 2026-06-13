@@ -10,6 +10,9 @@
   `scripts/make_r10_truthset_fast5.py`.
 - Added R10 5 kHz example profile TOMLs for Dorado-compatible R10.4.1 E8.2
   validation.
+- Added local R10 FAST5/POD5/Dorado validation documentation in
+  `docs/r10_dorado_backend_validation.md` so the working simulation claim and
+  boundaries are recorded in this repository.
 
 ### Fixed
 
@@ -26,3 +29,16 @@
   non-ATCC bacterial RefSeq fixture.
 - The current claim is simulation/basecalling/reference-capture correctness. It
   is not an adaptive-sampling policy-performance claim.
+- The successful local Dorado path uses the R10.4.1 E8.2 400 bps HAC v5.2.0
+  model family with 5000 Hz simulated input.
+- Earlier R10 truth-set backend attempts using Squigulator built-in or custom
+  current models did not pass the Dorado tiny truth-set gate; they remain
+  provenance for the repair path, not validated production backends.
+
+### Known Follow-Ups
+
+- Add explicit equipment profiles for Flongle-like, MinION-like, and
+  PromethION-like simulations. Profiles should own channel count, target yield,
+  working pore percentage, duration, sample rate, sequencing speed, flowcell
+  metadata, and expected read/base scale. These profiles should be treated as
+  simulation approximations, not perfect physical device models.
