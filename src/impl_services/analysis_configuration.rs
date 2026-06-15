@@ -35,6 +35,8 @@ impl AnalysisConfigurationService for Analysis {
             (79, "pore1".to_string()),
             (80, "pore".to_string()),
             (83, "strand".to_string()),
+            (86, "short_strand".to_string()),
+            (87, "strand2".to_string()),
             (85, "unavailable".to_string()),
             (84, "transition".to_string()),
             (90, "zero".to_string()),
